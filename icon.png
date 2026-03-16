@@ -1,0 +1,140 @@
+// ── APRENDE PALABRAS — Service Worker ─────────────────────────────────────────
+const APP_VERSION = 'v1.0.0';
+const CACHE_STATIC = `aprende-static-${APP_VERSION}`;
+const CACHE_IMAGES = `aprende-images-${APP_VERSION}`;
+
+// Files to cache on install (app shell — works fully offline)
+const STATIC_ASSETS = [
+  '/',
+  '/index.html',
+  '/manifest.json',
+  '/css/splash.css',
+  '/css/home.css',
+  '/css/flashcard.css',
+  '/js/data.js',
+  '/js/speech.js',
+  '/js/db.js',
+  '/js/mascot.js',
+  '/js/flashcard.js',
+  '/js/confetti.js',
+  '/js/app.js',
+  '/icons/icon-192.png',
+  '/icons/icon-512.png',
+  'https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;700;900&display=swap'
+];
+
+// ── INSTALL: pre-cache app shell ──────────────────────────────────────────────
+self.addEventListener('install', event => {
+  event.waitUntil(
+    caches.open(CACHE_STATIC)
+      .then(cache => cache.addAll(STATIC_ASSETS.map(u => new Request(u, {cache: 'reload'}))))
+      .then(() => self.skipWaiting())
+      .catch(err => console.warn('[SW] Install cache error:', err))
+  );
+});
+
+// ── ACTIVATE: clean old caches ────────────────────────────────────────────────
+self.addEventListener('activate', event => {
+  event.waitUntil(
+    caches.keys().then(keys =>
+      Promise.all(
+        keys
+          .filter(k => k !== CACHE_STATIC && k !== CACHE_IMAGES)
+          .map(k => caches.delete(k))
+      )
+    ).then(() => self.clients.claim())
+  );
+});
+
+// ── FETCH: tiered cache strategy ──────────────────────────────────────────────
+self.addEventListener('fetch', event => {
+  const url = new URL(event.request.url);
+
+  // Wikipedia API images → Cache-First with network fallback
+  if (url.hostname.includes('wikipedia.org') || url.hostname.includes('wikimedia.org')) {
+    event.respondWith(cacheFirstWithNetwork(event.request, CACHE_IMAGES));
+    return;
+  }
+
+  // Google Fonts → Cache-First (long-lived)
+  if (url.hostname.includes('fonts.googleapis.com') || url.hostname.includes('fonts.gstatic.com')) {
+    event.respondWith(cacheFirstWithNetwork(event.request, CACHE_STATIC));
+    return;
+  }
+
+  // App shell (HTML, CSS, JS, icons) → Cache-First, then network
+  if (url.origin === self.location.origin) {
+    event.respondWith(cacheFirstWithNetwork(event.request, CACHE_STATIC));
+    return;
+  }
+
+  // Everything else → Network with cache fallback
+  event.respondWith(networkFirstWithCache(event.request, CACHE_STATIC));
+});
+
+// ── STRATEGY: Cache-First, update in background ───────────────────────────────
+async function cacheFirstWithNetwork(request, cacheName) {
+  const cache = await caches.open(cacheName);
+  const cached = await cache.match(request);
+  if (cached) {
+    // Refresh in background (stale-while-revalidate)
+    fetch(request).then(res => {
+      if (res && res.status === 200) cache.put(request, res.clone());
+    }).catch(() => {});
+    return cached;
+  }
+  try {
+    const response = await fetch(request);
+    if (response && response.status === 200) {
+      cache.put(request, response.clone());
+    }
+    return response;
+  } catch (err) {
+    // Offline fallback for HTML
+    if (request.destination === 'document') {
+      return cache.match('/index.html');
+    }
+    throw err;
+  }
+}
+
+// ── STRATEGY: Network-First, cache fallback ───────────────────────────────────
+async function networkFirstWithCache(request, cacheName) {
+  const cache = await caches.open(cacheName);
+  try {
+    const response = await fetch(request);
+    if (response && response.status === 200) {
+      cache.put(request, response.clone());
+    }
+    return response;
+  } catch (err) {
+    const cached = await cache.match(request);
+    if (cached) return cached;
+    throw err;
+  }
+}
+
+// ── BACKGROUND SYNC: update check ────────────────────────────────────────────
+self.addEventListener('message', event => {
+  if (!event.data) return;
+
+  if (event.data === 'SKIP_WAITING' || event.data.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+  }
+
+  if (event.data.type === 'SYNC_NOW') {
+    // Re-warm the image cache for any recently viewed Wikipedia images
+    // (In production you'd drain a sync queue here)
+    console.log('[SW] Sync requested after reconnect');
+    event.waitUntil(
+      caches.open(CACHE_IMAGES).then(cache => cache.keys()).then(keys => {
+        console.log(`[SW] Image cache has ${keys.length} entries`);
+      })
+    );
+  }
+
+  if (event.data === 'GET_VERSION' || event.data.type === 'GET_VERSION') {
+    const port = event.ports && event.ports[0];
+    if (port) port.postMessage({ version: APP_VERSION });
+  }
+});

@@ -1,0 +1,40 @@
+// ── SPEECH (Web Speech API) ───────────────────────────────────────────────────
+let selectedVoice = null;
+let speakBtnEl    = null;
+
+function loadVoices() {
+  const voices = window.speechSynthesis.getVoices();
+  if (!voices.length) return;
+  const priority = [
+    v => /es[-_](mx|ar|co|cl|pe|ve)/i.test(v.lang) && /female|paulina|monica|lucia|sofia/i.test(v.name),
+    v => /es[-_](mx|ar|co|cl|pe|ve)/i.test(v.lang),
+    v => /es/i.test(v.lang),
+  ];
+  for (const test of priority) {
+    const match = voices.find(test);
+    if (match) { selectedVoice = match; break; }
+  }
+  if (!selectedVoice && voices.length) selectedVoice = voices[0];
+}
+
+if (window.speechSynthesis) {
+  window.speechSynthesis.onvoiceschanged = loadVoices;
+  loadVoices();
+}
+
+function speak(text) {
+  // Android native bridge takes priority
+  if (window.AndroidTTS && window.AndroidTTS.isTtsAvailable && window.AndroidTTS.isTtsAvailable()) {
+    if (speakBtnEl) { speakBtnEl.classList.add('speaking'); setTimeout(() => speakBtnEl && speakBtnEl.classList.remove('speaking'), 800); }
+    window.AndroidTTS.speak(text);
+    return;
+  }
+  if (!window.speechSynthesis || !text) return;
+  window.speechSynthesis.cancel();
+  const utt = new SpeechSynthesisUtterance(text);
+  if (selectedVoice) utt.voice = selectedVoice;
+  utt.lang = 'es-MX'; utt.rate = 0.82; utt.pitch = 1.15; utt.volume = 1;
+  if (speakBtnEl) speakBtnEl.classList.add('speaking');
+  utt.onend = utt.onerror = () => { if (speakBtnEl) speakBtnEl.classList.remove('speaking'); };
+  window.speechSynthesis.speak(utt);
+}
